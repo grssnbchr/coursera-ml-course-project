@@ -1,18 +1,147 @@
 ---
-title: "Coursera Machine Learning Course Project"
+title: "Coursera Practical Machine Learning Course Project"
 author: "Timo Grossenbacher"
 date: "February 26, 2016"
 output: html_document
 ---
+# Predicting execution mistakes in weightlifting exercises
+
+## Goal
+
+The goal of this research is to find a model that can correctly recognize (predict) physical execution mistakes when performing weight lifting. 
+
+From the project description: 
+
+`Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). [...] Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate.`
+
+The participants wore different kinds of motion sensors on their arms, forearms, belts and on the dumbbells. Data from those sensors was operationalized to dozens of variables that now are used to predict the type of mistake made.
+
+## Data source(s)
+
+Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements. Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. , pp. 52-61. Curitiba, PR: Springer Berlin / Heidelberg, 2012. ISBN 978-3-642-34458-9. DOI: 10.1007/978-3-642-34459-6_6.
+
+## Preparations 
+
+Load packages... 
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(caret)
+```
 
 
 ## Load data
 
-```{r, echo=FALSE}
-plot(cars)
+```{r, cache = T}
+train <- read.csv(curl::curl("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"), na.strings = c("#DIV/0!", "NA"), stringsAsFactors = F)
+
+
+test <- read.csv(curl::curl("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"), na.strings = c("#DIV/0!", "NA"), stringsAsFactors = F)
+
+```
+
+## Explore
+
+```{r}
+dim(train)
+```
+
+The training set has 160 different variables. 
+
+```{r}
+table(train$user_name)
+table(train$classe)
 ```
 
 ## Preprocess
-## Build model
 
-## Evaluate
+From manually looking at the training dataset, there seem to be a lot of "#DIV/0!" values (probably stemming from excel). I replaced those with NA. Also, I removed predictors containing more than 25% NAs. 
+
+After this step I removed the first seven columns of the training dataset because these variables seem to be unrelated to the motion sensors' measurements. 
+
+Then, I also wanted to remove so-called near zero variables, but there were none (see http://topepo.github.io/caret/preprocess.html#nzv).
+
+Lastly, also according to the caret documentation, I removed higly pairwise correlated variables. 
+
+```{r}
+
+# remove columns which have more than 25% NAs
+train_wo_na <- train[, colSums(!is.na(train)) > nrow(train) * 0.75]
+# the first 7 variables don't seem to have any predictive value
+train_wo_na <- train_wo_na %>% select(-(1:7))
+# remove near zero values according to http://topepo.github.io/caret/preprocess.html#nzv
+nzv <- nearZeroVar(train_wo_na, saveMetrics= TRUE)
+nzv
+nzv[nzv$nzv,]
+# seems that there are no nzvs
+# correlations
+toRemove <- findCorrelation(cor(train_wo_na[ , -which(names(train_wo_na) %in% c("classe"))]))
+# according to caret we should remove columns with indices 10, 1, 8 because they have a high pairwise correlation
+train <- train_wo_na[,-toRemove]
+```
+
+Now the training data set is split into a training and a validation set. 
+
+```{r}
+# split into train (60%) and validation sets (40%) - there are so many instances that the training dataset doesn't need to be any bigger
+
+set.seed(3456)
+trainIndex <- createDataPartition(train$classe, p = .6, list = FALSE)
+
+train_train <- train[trainIndex,]
+train_validation <- train[-trainIndex,]
+
+train_train$classe <- factor(train_train$classe)
+train_validation$classe <- factor(train_validation$classe)
+```
+
+
+## Train model
+
+The obvious model to train here is a random forest because it seems to be the machine learning allstar and if it doesn't work out well I still could have tried other models. Also, I don't think the interpretability is key here because there are so many different variables stemming from only 3-4 sensors - the goal is just to have a good prediction.
+
+I used a slightly adjusted parameter grid with predefined numbers of random predictors ("mtry") because I wanted to try out that feature.
+
+```{r, cache = T}
+# reduced the repeats of bootstrap because it takes too long otherwise
+fitControl <- trainControl(method = "boot", number = 10)
+
+# custom tuning grid
+rfGrid <- expand.grid(mtry = c(5, 10, 20, 25, 30))
+set.seed(825)
+rf <- train(classe ~ ., data = train_train, 
+            method = "rf", 
+            trControl = fitControl, 
+            verbose = FALSE,
+            tuneGrid = rfGrid)
+rf
+## the RF model gives a very good accuracy of 0.988 on the training set
+trellis.par.set(caretTheme())
+plot(rf)
+```
+
+
+The tuning process chose a Random Forest with 10 random predictors as best performing. It already gives an outstanding accuracy of >0.95 on the training set.
+
+## Evaluate model 
+
+```{r}
+# predict on the validation set
+predictions <- predict(rf, train_validation)
+
+confusionMatrix(predictions, train_validation$classe)
+```
+
+On the train and validation set, the model performs exceptionally well - interestingly, it performs even better on the validation set than the set it was trained on. Also, all classes seem to be more or less equally well predicted (all measures over 0.95). Jackpot! 
+
+## Predict test cases for quiz
+
+```{r}
+# now the model is evaluated on the final test set with 20 test cases
+predictions <- predict(rf, test)
+
+predictions
+
+```
+
